@@ -216,6 +216,7 @@ canvas#chart{display:block;border-radius:6px;}
 </div>
 <div id="tab-bar">
   <button class="tab-btn active" onclick="switchTab('signals')">Signals</button>
+  <button class="tab-btn" onclick="switchTab('alerts')">Alerts <span id="alert-badge" style="display:none;background:var(--rose);color:#111;font-size:9px;font-weight:700;padding:1px 5px;border-radius:10px;margin-left:4px;vertical-align:middle;"></span></button>
   <button class="tab-btn" onclick="switchTab('portfolio')">Portfolio</button>
   <button class="tab-btn" onclick="switchTab('guide')">Guide</button>
 </div>
@@ -365,6 +366,24 @@ canvas#chart{display:block;border-radius:6px;}
 </div>
 </div>
 
+<!-- ═══ ALERTS TAB ═══ -->
+<div id="tab-alerts" class="tab-content">
+<div style="padding:14px;max-width:520px;margin:0 auto;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+    <div>
+      <div style="font-size:11px;font-weight:500;letter-spacing:2px;color:var(--text-soft);">TRADER ALERTS</div>
+      <div style="font-size:10px;color:var(--text-faint);margin-top:3px;">TFXC PREMIUM · Tap any signal to open</div>
+    </div>
+    <button id="clear-alerts-btn" style="background:transparent;border:1px solid var(--border);color:var(--text-soft);padding:5px 12px;font-size:10px;font-family:inherit;border-radius:6px;cursor:pointer;letter-spacing:1px;">Clear all</button>
+  </div>
+  <div id="alerts-list">
+    <div style="text-align:center;padding:40px 0;color:var(--text-faint);font-size:12px;line-height:2;">
+      No trader signals yet.<br>Waiting for TFXC PREMIUM...
+    </div>
+  </div>
+</div>
+</div>
+
 <div id="tab-guide" class="tab-content">
 <div style="padding:14px;max-width:520px;margin:0 auto;">
   <div class="card">
@@ -469,7 +488,7 @@ let countdown=60,timerHandle=null,lastResult=null,lastAlertedKey=null,currentPai
 let currentMode="balanced",currentRiskMode="moderate",currentLeverage=200;
 
 function switchTab(tab){
-  document.querySelectorAll('.tab-btn').forEach((b,i)=>{b.classList.toggle('active',['signals','portfolio','guide'][i]===tab);});
+  document.querySelectorAll('.tab-btn').forEach((b,i)=>{b.classList.toggle('active',['signals','alerts','portfolio','guide'][i]===tab);});
   document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
   document.getElementById('tab-'+tab).classList.add('active');
   const isSignals=tab==='signals';
@@ -477,6 +496,7 @@ function switchTab(tab){
   document.getElementById('refreshbar').style.display=isSignals?'flex':'none';
   document.getElementById('progress-bar').style.display=isSignals?'block':'none';
   if(tab==='portfolio')renderPortfolio();
+  if(tab==='alerts'){renderAlertsList();clearAlertBadge();}
 }
 
 function setMode(mode){
@@ -556,22 +576,34 @@ function fireAlert(signal, riskLevel, pair, strength){
     sendPWANotification(signal, pair, risk,
       r.entryPrice||'—', r.slPrice||'—', r.tpPrice||'—', strength);
   }
-  // Audio beep
+  // Bell ding-ding sound — two strikes, rich harmonic tone
   try{
     const ctx = new (window.AudioContext||window.webkitAudioContext)();
-    const beeps = riskLevel==='low' ? 3 : riskLevel==='medium' ? 2 : 1;
-    const freq = signal==='BUY' ? 880 : 660;
-    for(let i=0;i<beeps;i++){
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.frequency.value = freq;
-      osc.type = 'sine';
-      gain.gain.setValueAtTime(0.3, ctx.currentTime + i*0.3);
-      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i*0.3 + 0.25);
-      osc.start(ctx.currentTime + i*0.3);
-      osc.stop(ctx.currentTime + i*0.3 + 0.25);
+    function playBell(when){
+      // Bell = fundamental + harmonics with fast attack, slow decay
+      const harmonics = [
+        {freq: 1400, gain: 0.6},
+        {freq: 2800, gain: 0.3},
+        {freq: 4200, gain: 0.15},
+        {freq: 5600, gain: 0.08},
+      ];
+      harmonics.forEach(h => {
+        const osc  = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain); gain.connect(ctx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = h.freq;
+        // Fast attack, slow exponential decay — classic bell shape
+        gain.gain.setValueAtTime(0, when);
+        gain.gain.linearRampToValueAtTime(h.gain, when + 0.005);
+        gain.gain.exponentialRampToValueAtTime(0.001, when + 1.2);
+        osc.start(when);
+        osc.stop(when + 1.2);
+      });
     }
+    // Ding — Ding (two strikes, 0.6s apart)
+    playBell(ctx.currentTime);
+    playBell(ctx.currentTime + 0.6);
   }catch(e){}
 }
 
@@ -1914,7 +1946,159 @@ function initSearch(){
   });
 }
 
-// ── Trader Signal System ───────────────────────────────────────────────
+// ── Alert History ──────────────────────────────────────────────────────
+const MAX_ALERTS = 50;
+
+function saveAlertToHistory(signal){
+  try{
+    const history = getAlertHistory();
+    // Avoid duplicates — same signal within 60s
+    const isDupe = history.length > 0 &&
+      history[0].pair === signal.pair &&
+      history[0].signal === signal.signal &&
+      Math.abs((history[0].receivedAt||0) - (signal.receivedAt||0)) < 60000;
+    if(isDupe) return;
+    history.unshift({...signal, seenAt: Date.now()});
+    localStorage.setItem('traderAlertHistory', JSON.stringify(history.slice(0, MAX_ALERTS)));
+    updateAlertBadge();
+  }catch(e){}
+}
+
+function getAlertHistory(){
+  try{
+    return JSON.parse(localStorage.getItem('traderAlertHistory')||'[]');
+  }catch(e){ return []; }
+}
+
+function clearAlertHistory(){
+  try{ localStorage.removeItem('traderAlertHistory'); }catch(e){}
+  renderAlertsList();
+  clearAlertBadge();
+}
+
+function updateAlertBadge(){
+  // Count unseen alerts
+  const lastSeen = parseInt(localStorage.getItem('alertsLastSeen')||'0');
+  const history = getAlertHistory();
+  const unseen = history.filter(a => (a.seenAt||0) > lastSeen).length;
+  const badge = document.getElementById('alert-badge');
+  if(!badge) return;
+  if(unseen > 0){
+    badge.style.display='inline';
+    badge.textContent = unseen > 9 ? '9+' : unseen;
+  } else {
+    badge.style.display='none';
+  }
+}
+
+function clearAlertBadge(){
+  try{ localStorage.setItem('alertsLastSeen', Date.now()); }catch(e){}
+  updateAlertBadge();
+}
+
+function renderAlertsList(){
+  const list = document.getElementById('alerts-list');
+  if(!list) return;
+  const history = getAlertHistory();
+
+  if(history.length === 0){
+    list.innerHTML = `<div style="text-align:center;padding:40px 0;color:var(--text-faint);font-size:12px;line-height:2;">
+      No trader signals yet.<br>Waiting for TFXC PREMIUM...
+    </div>`;
+    return;
+  }
+
+  list.innerHTML = history.map((s, idx) => {
+    const sigCol = s.signal==='BUY'?'var(--sage)':'var(--rose)';
+    const sigBg  = s.signal==='BUY'?'var(--sage-dim)':'var(--rose-dim)';
+    const sigBdr = s.signal==='BUY'?'var(--sage-mid)':'var(--rose-mid)';
+    const dec    = PAIR_DEC_MAP[s.pair]||5;
+    const conf   = s.combinedConf ?? s.backtestConf ?? null;
+    const confCol= conf!==null ? getConfCol(conf) : 'var(--text-faint)';
+    const age    = Math.round((Date.now() - (s.receivedAt||Date.now())) / 60000);
+    const ageStr = age < 1 ? 'just now' : age < 60 ? age+'m ago' : Math.round(age/60)+'h ago';
+    const slDist = s.sl && s.entry ? Math.abs(s.entry - s.sl) : 0;
+    const rr1    = s.tp1 && slDist ? (Math.abs(s.tp1-s.entry)/slDist).toFixed(1) : '—';
+
+    return `<div class="alert-item" data-idx="${idx}"
+      style="background:var(--surface);border:1px solid ${sigBdr};border-radius:12px;padding:14px 16px;margin-bottom:10px;cursor:pointer;transition:background 0.15s;active:background:var(--card2);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:22px;font-weight:700;color:${sigCol};">${s.signal}</div>
+          <div>
+            <div style="font-size:14px;font-weight:600;color:var(--text);">${s.pair}</div>
+            <div style="font-size:10px;color:var(--text-faint);">${ageStr}</div>
+          </div>
+        </div>
+        <div style="text-align:right;">
+          ${conf!==null?`<div style="font-size:18px;font-weight:700;color:${confCol};">${conf}%</div>
+          <div style="font-size:9px;color:var(--text-faint);">confidence</div>`:''}
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:10px;">
+        <div style="background:${sigBg};border-radius:6px;padding:6px 8px;text-align:center;">
+          <div style="font-size:8px;color:${sigCol};margin-bottom:2px;">ENTRY</div>
+          <div style="font-size:12px;font-weight:600;color:var(--text);">${s.entry?.toFixed(dec)||'—'}</div>
+        </div>
+        <div style="background:var(--rose-dim);border-radius:6px;padding:6px 8px;text-align:center;">
+          <div style="font-size:8px;color:var(--rose);margin-bottom:2px;">SL</div>
+          <div style="font-size:12px;font-weight:600;color:var(--rose);">${s.sl?.toFixed(dec)||'—'}</div>
+        </div>
+        <div style="background:var(--sage-dim);border-radius:6px;padding:6px 8px;text-align:center;">
+          <div style="font-size:8px;color:var(--sage);margin-bottom:2px;">TP1·1:${rr1}</div>
+          <div style="font-size:12px;font-weight:600;color:var(--sage);">${s.tp1?.toFixed(dec)||'—'}</div>
+        </div>
+        <div style="background:var(--sage-dim);border-radius:6px;padding:6px 8px;text-align:center;">
+          <div style="font-size:8px;color:var(--sage);margin-bottom:2px;">TP3</div>
+          <div style="font-size:12px;font-weight:600;color:var(--sage);">${s.tp3?.toFixed(dec)||'—'}</div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-size:10px;color:var(--slate);font-weight:500;">Tap to open ${s.pair} →</div>
+        <div style="font-size:9px;color:var(--text-faint);">TFXC PREMIUM</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Wire up tap-to-open
+  list.querySelectorAll('.alert-item').forEach(el => {
+    el.addEventListener('click', () => {
+      const idx = parseInt(el.dataset.idx);
+      const history = getAlertHistory();
+      const s = history[idx];
+      if(!s) return;
+      // Switch to signals tab and open the instrument
+      openAlertSignal(s);
+    });
+    el.addEventListener('mouseenter', () => el.style.background='var(--card2)');
+    el.addEventListener('mouseleave', () => el.style.background='var(--surface)');
+  });
+
+  // Wire clear button
+  const clearBtn = document.getElementById('clear-alerts-btn');
+  if(clearBtn){
+    clearBtn.onclick = () => {
+      if(confirm('Clear all trader alerts?')) clearAlertHistory();
+    };
+  }
+}
+
+function openAlertSignal(s){
+  // Select the instrument
+  currentPair = s.pair;
+  const sel = document.getElementById('pair-select');
+  if(sel) sel.value = s.pair;
+  // Switch to signals tab
+  switchTab('signals');
+  // Render the trader signal card immediately
+  renderTraderSignal(s);
+  // Update TV chart
+  renderTVChart(s.pair, tvInterval);
+  // Fetch fresh signal data
+  fetchAndAnalyse();
+  // Scroll to top
+  window.scrollTo(0,0);
+}
 const CF_WORKER_URL = 'https://signal-worker.pulastya-vishwas90.workers.dev';
 let lastTraderSignalTs = null;
 
@@ -2022,25 +2206,32 @@ async function pollTraderSignal(){
     const isNew=lastTraderSignalTs!==data.receivedAt;
     lastTraderSignalTs=data.receivedAt;
     renderTraderSignal(data);
-    if(isNew&&alertsEnabled){
+    if(isNew){
+      saveAlertToHistory(data);
+      if(alertsEnabled){
       flashSignalBanner(data.signal,'medium',data.pair);
       sendPWANotification(data.signal,data.pair,`Trader signal · TP1:${data.tp1} TP2:${data.tp2} TP3:${data.tp3}`,data.entry,data.sl,data.tp1,data.combinedConf);
       try{
         const ac=new(window.AudioContext||window.webkitAudioContext)();
-        const freq=data.signal==='BUY'?880:660;
-        for(let i=0;i<3;i++){
-          const o=ac.createOscillator(),g=ac.createGain();
-          o.connect(g);g.connect(ac.destination);
-          o.frequency.value=freq;o.type='sine';
-          g.gain.setValueAtTime(0.4,ac.currentTime+i*0.35);
-          g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+i*0.35+0.3);
-          o.start(ac.currentTime+i*0.35);o.stop(ac.currentTime+i*0.35+0.3);
+        function playBell(when){
+          [{freq:1400,gain:0.6},{freq:2800,gain:0.3},{freq:4200,gain:0.15},{freq:5600,gain:0.08}].forEach(h=>{
+            const o=ac.createOscillator(),g=ac.createGain();
+            o.connect(g);g.connect(ac.destination);
+            o.type='sine';o.frequency.value=h.freq;
+            g.gain.setValueAtTime(0,when);
+            g.gain.linearRampToValueAtTime(h.gain,when+0.005);
+            g.gain.exponentialRampToValueAtTime(0.001,when+1.2);
+            o.start(when);o.stop(when+1.2);
+          });
         }
+        playBell(ac.currentTime);
+        playBell(ac.currentTime+0.6);
       }catch(e){}
-    }
+      } // end alertsEnabled
+    } // end isNew
   }catch(e){ console.warn('Trader signal poll:',e.message); }
 }
-setInterval(pollTraderSignal,60000);
+setInterval(pollTraderSignal,15000);
 
 // ── PWA Service Worker Registration ───────────────────────────────────
 async function registerSW(){
@@ -2103,6 +2294,7 @@ window.addEventListener('load',()=>{
   initSearch();
   renderTVChart(currentPair, tvInterval);
   registerSW();
+  updateAlertBadge();
   pollTraderSignal();
   fetchAndAnalyse();startTimer();
 });
