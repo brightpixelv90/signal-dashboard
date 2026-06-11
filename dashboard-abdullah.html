@@ -576,15 +576,46 @@ async function scanAll() {
 function renderSignal(inst, data) {
   const content = document.getElementById("mainContent");
   const sigCls  = data.signal==="BUY"?"buy":data.signal==="SELL"?"sell":"skip";
-  const msClass = {TRENDING:"ms-trending",RANGING:"ms-ranging",CHOPPY:"ms-choppy",BREAKOUT_PENDING:"ms-breakout"}[data.market_state]||"ms-ranging";
+  const msMap   = {TRENDING:"ms-trending",RANGING:"ms-ranging",CHOPPY:"ms-choppy",BREAKOUT_PENDING:"ms-breakout",OUT_OF_SESSION:"ms-choppy",NEWS_BLACKOUT:"ms-choppy",CIRCUIT_BREAKER:"ms-choppy",CORRELATION_BLOCK:"ms-choppy"};
+  const msClass = msMap[data.market_state]||"ms-ranging";
   const chop    = data.choppiness?.choppiness_score ?? 0;
   const ind     = data.indicators_snapshot || {};
+  const cf      = data.confluence || null;
+  const vol     = data.vol_regime || null;
+
+  const blockStates = {
+    OUT_OF_SESSION:   { icon:"🕐", color:"var(--muted)",  label:"Outside Trading Session" },
+    NEWS_BLACKOUT:    { icon:"📰", color:"var(--warn)",   label:"News Blackout ±30min"    },
+    CIRCUIT_BREAKER:  { icon:"🔴", color:"var(--sell)",   label:"Circuit Breaker Active"  },
+    CORRELATION_BLOCK:{ icon:"🔗", color:"var(--warn)",   label:"Correlation Block"       },
+  };
+  const blockState = blockStates[data.market_state];
 
   const newsHtml = (data.news||[]).slice(0,4).map(n => {
     const s = n.sentiment;
     const tag = s===null?"":`<span class="sentiment-tag ${s>0.1?"sentiment-pos":s<-0.1?"sentiment-neg":"sentiment-neu"}">${s>0?"+":""}${s?.toFixed(2)}</span>`;
     return `<div class="news-item"><span class="news-source">${n.source}</span><span class="news-text">${n.headline}</span>${tag}</div>`;
   }).join("")||"<p style='color:var(--muted);font-size:12px'>No news loaded</p>";
+
+  const cfBar = cf ? `
+    <div style="margin:12px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+        <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Confluence Score</div>
+        <div style="font-family:var(--font-mono);font-size:13px;font-weight:700;color:${cf.score>=80?"var(--buy)":cf.score>=70?"var(--warn)":"var(--sell)"}">${cf.score}%</div>
+      </div>
+      <div style="height:6px;background:var(--border2);border-radius:3px;overflow:hidden">
+        <div style="height:100%;width:${cf.score}%;background:${cf.score>=80?"var(--buy)":cf.score>=70?"var(--warn)":"var(--sell)"};border-radius:3px;transition:width .5s"></div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+        ${Object.entries(cf.breakdown||{}).map(([k,v])=>`<span style="font-size:10px;padding:2px 6px;background:var(--surface);border:1px solid var(--border2);border-radius:4px;color:var(--muted)">${k} <span style="color:var(--text);font-weight:700">${v}</span></span>`).join("")}
+      </div>
+      ${!cf.tradeable?`<div style="margin-top:6px;font-size:11px;color:var(--sell)">⛔ Below 70% threshold — system blocked this signal</div>`:""}
+    </div>` : "";
+
+  const stormBanner = vol?.storm ? `
+    <div style="background:#3d2a00;border:1px solid #7a5200;border-radius:var(--radius-sm);padding:10px 12px;margin:10px 0;font-size:12px;color:var(--warn)">
+      ⚡ <strong>Storm Mode Active</strong> — ${vol.reason} Lot size halved.
+    </div>` : "";
 
   content.innerHTML = `
     <div class="tabs">
@@ -602,26 +633,44 @@ function renderSignal(inst, data) {
             <div style="font-size:11px;color:var(--muted);margin-top:3px">
               Price: <span style="font-family:var(--font-mono);color:var(--text)">${data.current_price??'—'}</span>
               &nbsp;·&nbsp; ${new Date(data.generated_at||Date.now()).toLocaleTimeString()}
+              ${data.session_valid?`&nbsp;·&nbsp;<span style="color:var(--buy);font-size:10px">✓ In Session</span>`:""}
             </div>
           </div>
           <div class="signal-badges">
             ${data.signal!=="NO_TRADE"?`<span class="badge badge-${sigCls}">${data.signal}</span>`:'<span class="badge badge-skip">NO TRADE</span>'}
-            ${data.grade&&data.grade!=="SKIP"?`<span class="badge badge-${data.grade.toLowerCase()}">Grade ${data.grade}</span>`:""}
-            <span class="market-state ${msClass}">${(data.market_state||"—").replace("_"," ")}</span>
+            ${cf&&cf.grade&&cf.grade!=="SKIP"?`<span class="badge badge-${cf.grade.toLowerCase()}">Grade ${cf.grade} · ${cf.score}%</span>`:""}
+            <span class="market-state ${msClass}">${(data.market_state||"—").replace(/_/g," ")}</span>
           </div>
         </div>
-        <div class="confidence-bar"><div class="confidence-fill" style="width:${data.confidence||0}%"></div></div>
-        <div class="confidence-label">Confidence: ${data.confidence??0}/100</div>
 
-        ${data.signal!=="NO_TRADE"?`
+        ${blockState ? `
+        <div style="background:${blockState.color}18;border:1px solid ${blockState.color}44;border-radius:var(--radius-sm);padding:16px;margin:12px 0;text-align:center">
+          <div style="font-size:28px;margin-bottom:8px">${blockState.icon}</div>
+          <div style="font-size:13px;font-weight:700;color:${blockState.color};margin-bottom:6px">${blockState.label}</div>
+          <div style="font-size:12px;color:var(--muted);line-height:1.6">${data.reasoning||""}</div>
+        </div>` : ""}
+
+        ${stormBanner}
+
+        <div class="confidence-bar"><div class="confidence-fill" style="width:${data.confidence||0}%"></div></div>
+        <div class="confidence-label">AI Confidence: ${data.confidence??0}/100</div>
+
+        ${cfBar}
+
+        ${data.signal!=="NO_TRADE"&&!blockState?`
         <div class="levels-grid">
           <div class="level-box entry"><div class="lb-label">Entry</div><div class="lb-value">${data.entry??'—'}</div><div class="lb-sub">Zone: ${data.entry_zone?.from??'—'} – ${data.entry_zone?.to??'—'}</div></div>
           <div class="level-box sl"><div class="lb-label">Stop Loss</div><div class="lb-value">${data.sl??'—'}</div><div class="lb-sub">${data.sl_pips??'—'} pips</div></div>
           <div class="level-box tp1"><div class="lb-label">TP 1</div><div class="lb-value">${data.tp1??'—'}</div><div class="lb-sub">${data.tp1_pips??'—'} pips</div></div>
           <div class="level-box tp2"><div class="lb-label">TP 2</div><div class="lb-value">${data.tp2??'—'}</div><div class="lb-sub">Extended target</div></div>
-          <div class="level-box lot"><div class="lb-label">Lot Size</div><div class="lb-value">${data.lot_size??'—'}</div><div class="lb-sub">$${data.account_risk_amount??'—'} · ${data.risk_pct_used??'auto'}% risk</div></div>
+          <div class="level-box lot"><div class="lb-label">Lot Size${vol?.storm?" ⚡":""}</div><div class="lb-value">${data.lot_size??'—'}</div><div class="lb-sub">$${data.account_risk_amount??'—'} · ${data.risk_pct_used??'auto'}% risk</div></div>
           <div class="level-box rr"><div class="lb-label">R:R</div><div class="lb-value">${data.rr_ratio??'—'}</div></div>
-        </div>`:``}
+        </div>
+        ${data.partial_close_note?`
+        <div style="background:#0d2a1a;border:1px solid #1a5c3d;border-radius:var(--radius-sm);padding:10px 12px;margin:8px 0;font-size:12px;color:#10d98a">
+          📊 <strong>Partial Close:</strong> ${data.partial_close_note}
+        </div>`:""}
+        `:""}
 
         <div style="margin:10px 0">
           <div style="font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px">Market Choppiness</div>
@@ -641,12 +690,12 @@ function renderSignal(inst, data) {
           ${ind.h1_trend?`<div class="ind-chip">1H <span>${ind.h1_trend.replace("_"," ")}</span></div>`:""}
         </div>
 
-        <div class="analysis-box" style="margin-top:12px">
+        ${!blockState?`<div class="analysis-box" style="margin-top:12px">
           <div class="analysis-row"><div class="analysis-label">AI Reasoning</div><div>${data.reasoning||"—"}</div></div>
           ${data.structure_reason?`<hr class="divider"><div class="analysis-row"><div class="analysis-label">Structure</div><div>${data.structure_reason}</div></div>`:""}
           ${data.history_note?`<hr class="divider"><div class="analysis-row"><div class="analysis-label">Pattern History</div><div>${data.history_note}</div></div>`:""}
           ${data.news_reason?`<hr class="divider"><div class="analysis-row"><div class="analysis-label">News Bias: <span style="color:${data.news_bias==='BULLISH'?'var(--buy)':data.news_bias==='BEARISH'?'var(--sell)':data.news_bias==='SUPPRESS'?'var(--warn)':'var(--muted)'}">${data.news_bias}</span></div><div>${data.news_reason}</div></div>`:""}
-        </div>
+        </div>`:""}
 
         <div class="news-section"><h4>Latest News (${(data.news||[]).length})</h4>${newsHtml}</div>
 
@@ -656,42 +705,6 @@ function renderSignal(inst, data) {
         </div>
       </div>
     </div>
-
-    <div class="tab-panel" id="tab-record">
-      <div class="signal-card">
-        <h3 style="margin-bottom:14px">Record Trade — ${inst}</h3>
-        <div class="record-form">
-          <div class="form-group"><label>Direction</label><select id="rt-dir"><option value="BUY">BUY</option><option value="SELL">SELL</option></select></div>
-          <div class="form-group"><label>Entry</label><input type="number" id="rt-entry" step="0.00001" placeholder="${data.entry??''}"/></div>
-          <div class="form-group"><label>Stop Loss</label><input type="number" id="rt-sl" step="0.00001" placeholder="${data.sl??''}"/></div>
-          <div class="form-group"><label>Take Profit</label><input type="number" id="rt-tp" step="0.00001" placeholder="${data.tp1??''}"/></div>
-          <div class="form-group"><label>Outcome</label><select id="rt-outcome"><option value="WIN">WIN</option><option value="LOSS">LOSS</option><option value="BE">BREAKEVEN</option><option value="OPEN">OPEN</option></select></div>
-          <div class="form-group"><label>PnL ($)</label><input type="number" id="rt-pnl" step="0.01" placeholder="e.g. 12.50"/></div>
-        </div>
-        <button class="btn btn-primary btn-sm" style="margin-top:8px" onclick="recordTrade('${inst}')">Save Trade</button>
-        <div id="rt-msg" style="margin-top:8px;font-size:12px"></div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="tab-history">
-      <div class="signal-card">
-        <h3 style="margin-bottom:14px">History — ${inst}</h3>
-        <div id="history-content"><div style="color:var(--muted);font-size:13px">Loading…</div></div>
-      </div>
-    </div>
-
-    <div class="tab-panel" id="tab-watchlist">
-      <div class="signal-card">
-        <h3 style="margin-bottom:6px">Notification Watchlist</h3>
-        <p style="color:var(--muted);font-size:12px;margin-bottom:14px">The Worker's Tier 1 and Tier 2 background checks run on these instruments every 1–5 minutes. Select which pairs you want monitored.</p>
-        <div class="watchlist-grid" id="watchlistGrid"></div>
-        <button class="btn btn-primary btn-sm" style="margin-top:14px" onclick="saveWatchlist()">Save Watchlist</button>
-        <div id="wl-msg" style="margin-top:8px;font-size:12px"></div>
-      </div>
-    </div>
-  `;
-
-  loadHistory(inst);
   loadWatchlist();
 }
 
@@ -786,7 +799,7 @@ function renderScanSummary() {
       <h3 style="margin-bottom:4px">⚡ ${signals.length} Active Signal${signals.length!==1?"s":""}</h3>
       <p style="color:var(--muted);font-size:12px;margin-bottom:14px">Sorted by confidence. Click row for full analysis.</p>
       <div style="overflow-x:auto">
-        <table class="history-table"><thead><tr><th>Pair</th><th>Signal</th><th>Grade</th><th>Entry</th><th>SL</th><th>TP1</th><th>Lots</th><th>R:R</th><th>Confidence</th></tr></thead>
+        <table class="history-table"><thead><tr><th>Pair</th><th>Signal</th><th>Grade</th><th>Entry</th><th>SL</th><th>TP1</th><th>Lots</th><th>R:R</th><th>Confluence</th><th>Confidence</th></tr></thead>
         <tbody>${signals.map(s=>`
           <tr style="cursor:pointer" onclick="selectInstrument('${s.inst}')">
             <td style="font-weight:700">${s.inst}</td>
