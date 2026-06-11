@@ -552,6 +552,21 @@ async function analyseInstrument(inst) {
   }
 }
 
+async function forceRefresh(inst) {
+  currentInst = inst;
+  renderSidebar();
+  showLoading(inst);
+  try {
+    const result = await apiPost("/analyze", { instrument:inst, userId:config.userId, balance:config.balance, riskPct:config.riskPct||undefined, nvidiaKey:config.nvidiaKey||undefined, tdKey:config.tdKey||undefined, forceRefresh:true });
+    signalCache[inst] = result;
+    renderSidebar();
+    renderSignal(inst, result);
+    fetchBudget();
+  } catch(e) {
+    showError("Failed to refresh " + inst + ": " + e.message);
+  }
+}
+
 async function scanAll() {
   const btn = document.getElementById("scanAllBtn");
   btn.disabled = true;
@@ -700,7 +715,7 @@ function renderSignal(inst, data) {
         <div class="news-section"><h4>Latest News (${(data.news||[]).length})</h4>${newsHtml}</div>
 
         <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" onclick="analyseInstrument('${inst}')">⟳ Refresh</button>
+          <button class="btn btn-primary btn-sm" onclick="forceRefresh('${inst}')">⟳ Refresh</button>
           <button class="btn btn-outline btn-sm" onclick="switchTab('record')">+ Record Trade</button>
         </div>
       </div>
